@@ -1,12 +1,11 @@
 package com.xuanma.module;
 
+import com.unity3d.player.UnityPlayer;
 import com.xuanma.core.BytesUtil;
 import com.xuanma.core.CRC16Util;
 import com.xuanma.log.Log;
 import com.xuanma.serial.SerialHandler;
 import com.xuanma.serial.listener.SerialReceiveListener;
-
-import org.simple.eventbus.EventBus;
 
 import java.io.IOException;
 
@@ -14,12 +13,12 @@ public class LockingPlate implements SerialReceiveListener {
     private SerialHandler serial;
     LockingPlateListener _listener;
     private static LockingPlate sDefaultPayment;
-    private byte[] header = {(byte)0xfa, (byte)0xce};
-    private byte[] tailer = {(byte)0xaf, (byte)0xec};
-    private byte[] headerRcv = {(byte)0xfb, (byte)0xcb};
-    private byte[] tailerRcv = {(byte)0xbf, (byte)0xbc};
+    private byte header = (byte)0xEA;
+    private byte tailer = (byte)0xFA;
+    private byte headerRcv = (byte)0xAE;
+    private byte tailerRcv = (byte)0xAF;
     private LockingPlate() {
-        serial = new SerialHandler("/dev/ttyS5", 115200, this);
+        serial = new SerialHandler("/dev/ttyS2", 115200, this);
         serial.active();
     }
     protected void finalize() {
@@ -27,7 +26,7 @@ public class LockingPlate implements SerialReceiveListener {
     }
     public static LockingPlate getDefault() {
         if (sDefaultPayment == null) {
-            synchronized (Payment.class) {
+            synchronized (LockingPlate.class) {
                 if (sDefaultPayment == null) {
                     sDefaultPayment = new LockingPlate();
                 }
@@ -36,17 +35,17 @@ public class LockingPlate implements SerialReceiveListener {
         return sDefaultPayment;
     }
 
-    private static final int LEN = 10;
     @Override
     public void reveive(byte[] val) {
-        Log.i(this, "reveive" + BytesUtil.BytesToHex(val));
-        for (int i=0; i<=val.length-LEN; i++) {
-            if (BytesUtil.compareBytes(val, i, headerRcv)
-                    && BytesUtil.compareBytes(val, i + LEN - tailerRcv.length, tailerRcv)) {
+        Log.i(this, "reveive: " + BytesUtil.BytesToHex(val));
 
-                byte[] dest = new byte[LEN];
-                System.arraycopy(val, i, dest, 0, LEN);
-                i+=LEN;
+        for (int i=0; i<=val.length; i++) {
+            int len = 0xff & val[1+i];
+            if (headerRcv == val[i]
+                    && tailerRcv == val[i + len - 1]) {
+                byte[] dest = new byte[len];
+                System.arraycopy(val, i, dest, 0, len);
+                i += len;
                 parse(dest);
             }
         }
@@ -60,22 +59,34 @@ public class LockingPlate implements SerialReceiveListener {
         }
     }
     private byte[] packet(byte cmd) {
-        return packet((byte)0x01, cmd, (byte)0x00);
+        return packet((byte)0x00, cmd);
     }
-    private byte[] packet(byte cmd, byte value) {
-        return packet((byte)0x01, cmd, value);
+    private byte[] packet(byte func, byte cmd) {
+        return packet(func, cmd, (byte)0x00);
     }
-    private byte[] packet(byte addr, byte cmd, byte value) {
-        byte[] raw = new byte[header.length + 3];
-        int i = 0;
-        BytesUtil.appendBytes(raw, 0, header);
-        i += header.length;
-        raw[i++] = cmd;
-        raw[i++] = addr;
-        raw[i++] = value;
-        byte[] crc = CRC16Util.appendCrc16(raw);
+    private byte[] packet(byte func, byte cmd, byte val) {
+        byte len = 6;
+        byte[] raw = new byte[len];
+        raw[0] = header;
+        raw[len - 1] = tailer;
+        raw[1] = len;
+        raw[2] = func;
+        raw[3] = cmd;
+        raw[4] = val;
 
-        return BytesUtil.appendBytes(crc, tailer);
+        return raw;
+    }
+    private byte[] packet(byte func, byte cmd, byte[] value) {
+        byte len = (byte)(0xff & (5 + value.length));
+        byte[] raw = new byte[len];
+        raw[0] = header;
+        raw[len - 1] = tailer;
+        raw[1] = len;
+        raw[2] = func;
+        raw[3] = cmd;
+        System.arraycopy(value, 0, raw, 4, value.length);
+
+        return raw;
     }
     private byte[] packetOfPoll(byte id) {
         return packet(CMD.POLL.getVal(), id);
@@ -84,7 +95,7 @@ public class LockingPlate implements SerialReceiveListener {
         return packet(CMD.UNLOCK.getVal(), id);
     }
     private byte[] packetOfCheck() {
-        return packet(CMD.CHECK.getVal());
+        return packet((byte)0x00, (byte)0x01, (byte)0x01);
     }
     public void check() {
         byte[] pac = packetOfCheck();
@@ -100,15 +111,7 @@ public class LockingPlate implements SerialReceiveListener {
     }
 
     private void parse(final byte[] buf) {
-        byte cmd = buf[2];
-        byte addr = buf[3];
-        byte index = buf[4];
-        byte value = buf[5];
-        switch (cmd) {
-            case (byte)0xA2:
-                handlerUnlockRev(index, value);
-                break;
-        }
+        UnityPlayer.UnitySendMessage("InternalMsgManager", "SerialMsg", BytesUtil.BytesToHex(buf));
     }
     private void handlerUnlockRev(byte index, byte val) {
         Log.i(this,"handlerUnlockRev: " + index + "-" + val);
